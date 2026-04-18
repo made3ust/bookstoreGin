@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bookstore/database"
 	"bookstore/models"
 	"net/http"
 	"strconv"
@@ -8,53 +9,37 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var books = []models.Book{
-	{ID: 1, Title: "The Hobbit", AuthorID: 1, CategoryID: 1, Price: 15.99},
-}
-var nextBookID = 2
-
 func GetBooks(c *gin.Context) {
+	var books []models.Book
 	categoryIDStr := c.Query("category_id")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	offset := (page - 1) * limit
 
-	filteredBooks := books
+	query := database.DB
 
 	if categoryIDStr != "" {
 		catID, _ := strconv.Atoi(categoryIDStr)
-		var temp []models.Book
-		for _, b := range books {
-			if b.CategoryID == catID {
-				temp = append(temp, b)
-			}
-		}
-		filteredBooks = temp
+		query = query.Where("category_id = ?", catID)
 	}
 
-	start := (page - 1) * limit
-	end := start + limit
-	if start > len(filteredBooks) {
-		filteredBooks = []models.Book{}
-	} else {
-		if end > len(filteredBooks) {
-			end = len(filteredBooks)
-		}
-		filteredBooks = filteredBooks[start:end]
+	if err := query.Limit(limit).Offset(offset).Find(&books).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch books"})
+		return
 	}
 
-	c.JSON(http.StatusOK, filteredBooks)
+	c.JSON(http.StatusOK, books)
 }
 
 func GetBook(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	var book models.Book
 
-	for _, item := range books {
-		if item.ID == id {
-			c.JSON(http.StatusOK, item)
-			return
-		}
+	if err := database.DB.First(&book, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Book not found"})
+		return
 	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "Book not found"})
+	c.JSON(http.StatusOK, book)
 }
 
 func CreateBook(c *gin.Context) {
@@ -65,47 +50,40 @@ func CreateBook(c *gin.Context) {
 		return
 	}
 
-	if newBook.Title == "" || newBook.Price <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Title is required and Price > 0"})
+	if err := database.DB.Create(&newBook).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create book"})
 		return
 	}
-
-	newBook.ID = nextBookID
-	nextBookID++
-	books = append(books, newBook)
 
 	c.JSON(http.StatusCreated, newBook)
 }
 
 func UpdateBook(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	var updatedBook models.Book
+	var book models.Book
 
-	if err := c.ShouldBindJSON(&updatedBook); err != nil {
+	if err := database.DB.First(&book, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Book not found"})
+		return
+	}
+
+	if err := c.ShouldBindJSON(&book); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 		return
 	}
 
-	for i, item := range books {
-		if item.ID == id {
-			updatedBook.ID = id
-			books[i] = updatedBook
-			c.JSON(http.StatusOK, updatedBook)
-			return
-		}
-	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "Book not found"})
+	book.ID = uint(id)
+	database.DB.Save(&book)
+	c.JSON(http.StatusOK, book)
 }
 
 func DeleteBook(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 
-	for i, item := range books {
-		if item.ID == id {
-			books = append(books[:i], books[i+1:]...)
-			c.Status(http.StatusNoContent)
-			return
-		}
+	result := database.DB.Delete(&models.Book{}, id)
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Book not found"})
+		return
 	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "Book not found"})
+	c.Status(http.StatusNoContent)
 }
